@@ -2,7 +2,21 @@ const buttonIds = ["btn1", "btn2", "btn3", "btn4", "btn5", "btn6", "btn7", "btn8
 $(document).ready(function () {
     let isLocked = true;
     let currentState = "idle";  // Global variable
-    
+
+    // 1. Prepare the class sequence
+    const classes = ["STOP", "GO", "LEFT", "RIGHT", "UP", "DOWN"];
+    let classSequence = [];
+    classes.forEach(cls => {
+        for (let i = 0; i < 10; i++) classSequence.push(cls);
+    });
+    // Shuffle the array
+    classSequence = classSequence.sort(() => Math.random() - 0.5);
+
+    let cycle = 0;
+    let recordingActive = false;
+    let recordingStartTime;
+    let dataCache = {};
+    let isRunning = false;
 
     function resetLabelButtons() {
         buttonIds.forEach((btnId) => {
@@ -46,17 +60,18 @@ $(document).ready(function () {
     $('#startRecordingButton').click(() => { startRecording() });
     $('#stopRecordingButton').click(() => { stopRecording() });
 
-    let recordingActive = false;
-    let recordingStartTime;
-    let dataCache = {};
-    let cycle = 0;
-    let isRunning = false;
-
     function startRecording() {
         if (isRunning) return;
         isRunning = true;
         recordingActive = true;
         cycle = 0;
+
+        // Shuffle the class sequence for each recording
+        classSequence = [];
+        classes.forEach(cls => {
+            for (let i = 0; i < 10; i++) classSequence.push(cls);
+        });
+        classSequence = classSequence.sort(() => Math.random() - 0.5);
 
         recordingStartTime = new Date().toISOString();
 
@@ -88,37 +103,35 @@ $(document).ready(function () {
 
     function runExperimentCycles() {
         if (!recordingActive) return;
-    
-        if (cycle >= 15) {
+
+        if (cycle >= classSequence.length) {
             currentState = "finished";
             $("#stateDisplay").text("Experiment Complete!");
             $("#timeLeftDisplay").text("");
 
-            // Introduce a final 2-second delay before stopping
             setTimeout(() => {
                 $("#stateDisplay").text("Finalizing...");
                 stopRecording();
-            }, 2000); // 2-second delay before stopping
+            }, 2000);
             return;
-            // stopRecording();
-            // return;
         }
-    
+
         currentState = "idle";
         $("#stateDisplay").text("IDLE");
         fetch("http://localhost:5000/play_idle_beep", { method: "POST" });
-    
+
         setTimeout(() => {
-            currentState = "command";
-            $("#stateDisplay").text("COMMAND");
+            // 2. Set currentState to the next class
+            currentState = classSequence[cycle];
+            $("#stateDisplay").text(currentState);
             fetch("http://localhost:5000/play_command_beep", { method: "POST" });
-    
+
             setTimeout(() => {
                 cycle++;
                 runExperimentCycles();
             }, 2000);  // COMMAND duration
         }, 2000);  // IDLE duration
-    }   
+    }
 
     function stopRecording() {
         recordingActive = false;
@@ -136,7 +149,7 @@ $(document).ready(function () {
 
     openEarable.sensorManager.subscribeOnSensorDataReceived((sensorData) => {
         if (!recordingActive) return;
-    
+
         if (!dataCache[sensorData.timestamp]) {
             dataCache[sensorData.timestamp] = {
                 acc: [],
@@ -147,132 +160,75 @@ $(document).ready(function () {
                 state: currentState  // <-- explicitly set current state here
             };
         }
-    
+
         switch (sensorData.sensorId) {
             case 0:
                 dataCache[sensorData.timestamp].acc = [-sensorData.ACC.X, sensorData.ACC.Z, sensorData.ACC.Y];
                 dataCache[sensorData.timestamp].gyro = [-sensorData.GYRO.X, sensorData.GYRO.Z, sensorData.GYRO.Y];
                 dataCache[sensorData.timestamp].mag = [-sensorData.MAG.X, sensorData.MAG.Z, sensorData.MAG.Y];
                 break;
-    
+
             case 1:
                 dataCache[sensorData.timestamp].pressure = sensorData.BARO.Pressure;
                 dataCache[sensorData.timestamp].temperature = sensorData.TEMP.Temperature;
                 break;
         }
     });
-    
 
     function generateAndDownloadCSV(dataCache, recordingStartTime) {
         generateAndDownloadIMUCSV(dataCache, recordingStartTime);
         generateAndDownloadTempPressCSV(dataCache, recordingStartTime);
     }
-    
-    function generateAndDownloadIMUCSV(dataCache, recordingStartTime) {
-        // Collect participant info
-        let participantId = document.getElementById('participantId').value || "000";
-        let categoryId = document.getElementById('categoryId').value || "SC";
-        let classId = document.getElementById('classId').value.padStart(2, '0') || "00";
-        let sessionId = document.getElementById('sessionId').value.padStart(2, '0') || "00";
-        let formattedTime = recordingStartTime.replace(/[:.]/g, "_");
-    
-        // Filename with participant data clearly included
-        let filename = `P${participantId}_${categoryId}${classId}_S${sessionId}_IMU_${formattedTime}.csv`;
-    
-        let headers = [
-            "timestamp", "state",
-            "sensor_accX[g]", "sensor_accY[g]", "sensor_accZ[g]",
-            "sensor_gyroX[°/s]", "sensor_gyroY[°/s]", "sensor_gyroZ[°/s]",
-            "sensor_magX[µT]", "sensor_magY[µT]", "sensor_magZ[µT]"
-        ];
-    
-        let rows = [];
-    
-        Object.keys(dataCache).sort().forEach(timestamp => {
-            let data = dataCache[timestamp];
-            let row = [timestamp, data.state || "unknown"];
-    
-            let hasData = false;
-            ["acc", "gyro", "mag"].forEach(sensorType => {
-                if (data[sensorType] && data[sensorType].length === 3) {
-                    row.push(...data[sensorType].map(val => val.toString().replace(',', '.')));
-                    hasData = true;
-                } else {
-                    row.push('', '', '');
-                }
-            });
-    
-            if (hasData) {
-                rows.push(row);
-            }
-        });
-    
-        if (rows.length === 0) {
-            alert("No IMU data to save!");
-            return;
-        }
-    
-        let csv = headers.join(",") + "\n" + rows.map(row => row.join(",")).join("\n");
-    
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.setAttribute('hidden', '');
-        a.setAttribute('href', url);
-        a.setAttribute('download', filename);
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-    
-    
-    function generateAndDownloadTempPressCSV(dataCache, recordingStartTime) {
-        // Collect participant info
-        let participantId = document.getElementById('participantId').value || "000";
-        let categoryId = document.getElementById('categoryId').value || "SC";
-        let classId = document.getElementById('classId').value.padStart(2, '0') || "00";
-        let sessionId = document.getElementById('sessionId').value.padStart(2, '0') || "00";
-        let formattedTime = recordingStartTime.replace(/[:.]/g, "_");
-    
-        // Filename with participant data clearly included
-        let filename = `P${participantId}_${categoryId}${classId}_S${sessionId}_Pressure_${formattedTime}.csv`;
-    
-        let headers = [
-            "timestamp", "state", "sensor_pressure[Pa]", "sensor_temperature[°C]"
-        ];
-    
-        let rows = [];
-    
-        Object.keys(dataCache).sort().forEach(timestamp => {
-            let data = dataCache[timestamp];
-            let row = [timestamp, data.state || "unknown"];
-    
-            let pressure = data.pressure ? data.pressure.toString().replace(',', '.') : '';
-            let temperature = data.temperature ? data.temperature.toString().replace(',', '.') : '';
-    
-            if (pressure || temperature) {
-                row.push(pressure, temperature);
-                rows.push(row);
-            }
-        });
-    
-        if (rows.length === 0) {
-            alert("No pressure data to save!");
-            return;
-        }
-    
-        let csv = headers.join(",") + "\n" + rows.map(row => row.join(",")).join("\n");
-    
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.setAttribute('hidden', '');
-        a.setAttribute('href', url);
-        a.setAttribute('download', filename);
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-      
 
+    // Helper function to generate and download IMU CSV
+    function generateAndDownloadIMUCSV(dataCache, recordingStartTime) {
+        let csvContent = "data:text/csv;charset=utf-8,";
+        csvContent += "timestamp,state,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z\n";
+        for (let timestamp in dataCache) {
+            let entry = dataCache[timestamp];
+            // Only write row if all sensor arrays are present and have 3 values
+            if (
+                Array.isArray(entry.acc) && entry.acc.length === 3 &&
+                Array.isArray(entry.gyro) && entry.gyro.length === 3 &&
+                Array.isArray(entry.mag) && entry.mag.length === 3
+            ) {
+                csvContent += [
+                    timestamp,
+                    entry.state,
+                    entry.acc[0], entry.acc[1], entry.acc[2],
+                    entry.gyro[0], entry.gyro[1], entry.gyro[2],
+                    entry.mag[0], entry.mag[1], entry.mag[2]
+                ].join(",") + "\n";
+            }
+        }
+        let encodedUri = encodeURI(csvContent);
+        let link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `IMU_${recordingStartTime}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // Helper function to generate and download Temperature/Pressure CSV
+    function generateAndDownloadTempPressCSV(dataCache, recordingStartTime) {
+        let csvContent = "data:text/csv;charset=utf-8,";
+        csvContent += "timestamp,state,pressure,temperature\n";
+        for (let timestamp in dataCache) {
+            let entry = dataCache[timestamp];
+            csvContent += [
+                timestamp,
+                entry.state,
+                entry.pressure,
+                entry.temperature
+            ].join(",") + "\n";
+        }
+        let encodedUri = encodeURI(csvContent);
+        let link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `TempPress_${recordingStartTime}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
 });
